@@ -1,15 +1,27 @@
 import { useEffect, useState } from "react";
-import { Polyline, useMap } from "react-leaflet";
+import { Polyline, useMap, Marker, Popup } from "react-leaflet";
 import axios from "axios";
-import { LatLng } from "leaflet";
+import { LatLng, Icon, LatLngBounds } from "leaflet";
 import extractTag from "roamjs-components/util/extractTag";
 import { TreeNode } from "roamjs-components/types";
 
 const MAPBOX_TOKEN = "pk.eyJ1IjoiZHZhcmdhczkyNDk1IiwiYSI6ImNraWYycDExbjAxZ3oycHFwcW51YzVkOXQifQ.snYquuD4M5yAor3cyMGtdA";
 
-type RoutePoint = {
-  location: string;
+// Standard marker icon
+const MarkerIcon = new Icon({
+  iconUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png",
+  iconRetinaUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
+
+type Location = {
+  name: string;
   coordinates: [number, number];
+  uid?: string;
 };
 
 interface MapboxDirectionsResponse {
@@ -26,31 +38,6 @@ interface MapboxDirectionsResponse {
     location: [number, number];
     name: string;
   }>;
-}
-
-const getRouteCoordinates = async (points: RoutePoint[]): Promise<LatLng[]> => {
-  if (points.length < 2) return [];
-  
-  // Mapbox expects coordinates in longitude,latitude format
-  const coordinates = points.map(p => `${p.coordinates[1]},${p.coordinates[0]}`).join(';');
-  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
-  
-  try {
-    const response = await axios.get<MapboxDirectionsResponse>(url);
-    
-    if (response.data.code !== 'Ok' || !response.data.routes?.[0]?.geometry?.coordinates) {
-      console.error('Invalid response from Mapbox:', response.data);
-      return [];
-    }
-
-    // Convert coordinates from [lng, lat] to [lat, lng] format for Leaflet
-    return response.data.routes[0].geometry.coordinates.map(
-      coord => new LatLng(coord[1], coord[0])
-    );
-  } catch (error) {
-    console.error('Error fetching route:', error);
-    return [];
-  }
 }
 
 const getCoordinatesForLocation = async (locationName: string): Promise<[number, number] | null> => {
@@ -72,15 +59,12 @@ const getCoordinatesForLocation = async (locationName: string): Promise<[number,
   }
 };
 
-const getRouteFromTree = async ({ children }: { children: TreeNode[] }): Promise<LatLng[]> => {
-  const routeNode = children.find(c => c.text.trim().toUpperCase() === "ROUTE");
-  if (!routeNode?.children?.length) return [];
-
-  const points: RoutePoint[] = [];
+const getLocationsFromNodes = async (nodes: TreeNode[]): Promise<Location[]> => {
+  const locations: Location[] = [];
   
-  for (const point of routeNode.children) {
-    const locationName = extractTag(point.text.trim());
-    const coordMatch = point.children?.[0]?.text.match(/([-\d.]+),\s*([-\d.]+)/);
+  for (const node of nodes) {
+    const locationName = extractTag(node.text.trim());
+    const coordMatch = node.children?.[0]?.text.match(/([-\d.]+),\s*([-\d.]+)/);
     
     let coords: [number, number] | null;
     if (coordMatch) {
@@ -90,43 +74,125 @@ const getRouteFromTree = async ({ children }: { children: TreeNode[] }): Promise
     }
     
     if (coords) {
-      points.push({
-        location: locationName,
-        coordinates: coords
+      locations.push({
+        name: locationName,
+        coordinates: coords,
+        uid: node.uid
       });
     }
   }
 
-  if (points.length < 2) {
-    console.warn('Not enough valid points to create a route');
-    return [];
-  }
-
-  return getRouteCoordinates(points);
+  return locations;
 };
 
-const RouteLayer = ({ tree }: { tree: { children: TreeNode[] } }): JSX.Element | null => {
+const getRouteCoordinates = async (locations: Location[]): Promise<LatLng[]> => {
+  if (locations.length < 2) return [];
+  
+  // Mapbox expects coordinates in longitude,latitude format
+  const coordinates = locations.map(loc => `${loc.coordinates[1]},${loc.coordinates[0]}`).join(';');
+  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
+  
+  try {
+    const response = await axios.get<MapboxDirectionsResponse>(url);
+    
+    if (response.data.code !== 'Ok' || !response.data.routes?.[0]?.geometry?.coordinates) {
+      console.error('Invalid response from Mapbox:', response.data);
+      return [];
+    }
+
+    // Convert coordinates from [lng, lat] to [lat, lng] format for Leaflet
+    return response.data.routes[0].geometry.coordinates.map(
+      coord => new LatLng(coord[1], coord[0])
+    );
+  } catch (error) {
+    console.error('Error fetching route:', error);
+    return [];
+  }
+};
+
+const LocationMarkers = ({ locations }: { locations: Location[] }): JSX.Element => (
+  <>
+    {locations.map((loc, index) => (
+      <Marker
+        key={`${loc.name}-${index}`}
+        position={loc.coordinates}
+        icon={MarkerIcon}
+        title={loc.name}
+      >
+        <Popup>
+          <div className="roamjs-marker-data">
+            {loc.name}
+          </div>
+        </Popup>
+      </Marker>
+    ))}
+  </>
+);
+
+const getFitBounds = (locations: Location[], routePoints: LatLng[]): LatLngBounds | null => {
+  const points = [
+    ...locations.map(loc => new LatLng(loc.coordinates[0], loc.coordinates[1])),
+    ...routePoints
+  ];
+  
+  if (points.length === 0) return null;
+  
+  return points.reduce(
+    (bounds, point) => bounds.extend(point),
+    new LatLngBounds(points[0], points[0])
+  );
+};
+
+const RouteAndPlacesLayer = ({ tree }: { tree: { children: TreeNode[] } }): JSX.Element | null => {
   const [routePoints, setRoutePoints] = useState<LatLng[]>([]);
+  const [routeLocations, setRouteLocations] = useState<Location[]>([]);
+  const [places, setPlaces] = useState<Location[]>([]);
   const map = useMap();
 
   useEffect(() => {
-    getRouteFromTree(tree).then(points => {
-      setRoutePoints(points);
-      if (points.length > 0) {
-        const bounds = points.reduce((bounds, point) => bounds.extend(point), map.getBounds());
-        map.fitBounds(bounds, { padding: [50, 50] });
-      }
-    });
-  }, [tree, map]);
+    const loadLocationsAndRoute = async () => {
+      // Handle Places
+      const placesNode = tree.children.find(c => c.text.trim().toUpperCase() === "PLACES");
+      const placesList = placesNode ? await getLocationsFromNodes(placesNode.children) : [];
+      setPlaces(placesList);
 
-  return routePoints.length > 0 ? (
-    <Polyline
-      positions={routePoints}
-      color="blue"
-      weight={3}
-      opacity={0.7}
-    />
-  ) : null;
+      // Handle Route
+      const routeNode = tree.children.find(c => c.text.trim().toUpperCase() === "ROUTE");
+      if (routeNode?.children?.length) {
+        const routeLocs = await getLocationsFromNodes(routeNode.children);
+        setRouteLocations(routeLocs);
+        
+        if (routeLocs.length >= 2) {
+          const points = await getRouteCoordinates(routeLocs);
+          setRoutePoints(points);
+        }
+      }
+    };
+
+    loadLocationsAndRoute();
+  }, [tree]);
+
+  // Update map bounds when locations or route change
+  useEffect(() => {
+    const bounds = getFitBounds([...places, ...routeLocations], routePoints);
+    if (bounds) {
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+  }, [places, routeLocations, routePoints, map]);
+
+  return (
+    <>
+      <LocationMarkers locations={[...routeLocations, ...places]} />
+      {routePoints.length > 0 && (
+        <Polyline
+          positions={routePoints}
+          color="blue"
+          weight={3}
+          opacity={0.7}
+        />
+      )}
+    </>
+  );
 };
 
-export default RouteLayer;
+export default RouteAndPlacesLayer;

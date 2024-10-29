@@ -25,7 +25,7 @@ import openBlockInSidebar from "roamjs-components/writes/openBlockInSidebar";
 import setInputSetting from "roamjs-components/util/setInputSetting";
 import extractTag from "roamjs-components/util/extractTag";
 import { getTreeByHtmlId, useTreeByHtmlId } from "./hooks";
-import RouteLayer from './RouteLayer';
+import RouteAndPlacesLayer from './RouteLayer';
 
 const MAPBOX_TOKEN =
   "pk.eyJ1IjoiZHZhcmdhczkyNDk1IiwiYSI6ImNraWYycDExbjAxZ3oycHFwcW51YzVkOXQifQ.snYquuD4M5yAor3cyMGtdA";
@@ -355,7 +355,7 @@ const Maps = ({ blockId }: { blockId: string }): JSX.Element => {
           </LayersControl.BaseLayer>
         </LayersControl>
         <Markers href={href} markers={filteredMarkers} id={id} />
-        <RouteLayer tree={initialTree} />
+        <RouteAndPlacesLayer tree={initialTree} />
       </MapContainer>
     </EditContainer>
   );
